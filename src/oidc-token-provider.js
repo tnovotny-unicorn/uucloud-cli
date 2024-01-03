@@ -8,6 +8,8 @@ const {promisify} = require('util');
 const read = promisify(require("read"));
 const secureStore = require("oidc-plus4u-vault/lib/securestore");
 const propertiesReader = require("properties-reader");
+const axios = require('axios');
+const OIDC_URI = "https://uuidentity.plus4u.net/uu-oidc-maing02/bb977a99f4cc4c37a2afce3fd599d0a7";
 
 let oidcTokenCache;
 
@@ -38,6 +40,35 @@ class CustomOidcToken extends OidcToken {
       this._ac2 = accessCode2;
     }
     return res;
+  }
+}
+
+class ScopeTokenProviderVault extends CustomOidcToken {
+
+  constructor(projectRoot, tokenFile, uri) {
+    super(projectRoot, tokenFile);
+    this.logStore = uri;
+  }
+
+  async _login(accessCode1, accessCode2) {
+    let res = super._login(accessCode1, accessCode2);
+    if (res) {
+      this._ac1 = accessCode1;
+      this._ac2 = accessCode2;
+    }
+    const authResult = await axios.post(`${OIDC_URI}/oidc/grantToken`, {
+      grant_type: 'password',
+      accessCode1: this._ac1,
+      accessCode2: this._ac2,
+      scope: `openid ${this.logStore}`
+    });
+    this.token = `Bearer ${authResult.data.id_token}`;
+    return res;
+  }
+
+  _setToken(token) {
+    // Disable token overrides, new token is not needed for our UC anyway
+    return this.token;
   }
 }
 
@@ -78,8 +109,11 @@ class OidcTokenProvider {
       mkdirp.sync(workDir);
     }
     let oidcToken;
-    if (type === "oidc") {
-      oidcToken = new CustomOidcToken(path.join(homedir, ".uucloud-cli", "work"));
+    if (options['log-store-uri'] && mode === 'vault') {
+      console.error('Using extended token type');
+      oidcToken = new ScopeTokenProviderVault(workDir, undefined, options['log-store-uri']);
+    } else if (type === "oidc") {
+      oidcToken = new CustomOidcToken(workDir);
     } else {
       oidcToken = new CustomBasicAuth();
     }
@@ -106,7 +140,7 @@ class OidcTokenProvider {
         secureStoreContent = secureStore.read(password);
       } catch (e) {
         console.error("oidc-plus4u-vault cannot be read nand decrypted. Probably invalid password or malformed file.");
-        process.exit(4);    
+        process.exit(4);
       }
       if (!secureStoreContent[options.user]) {
         console.error(`oidc-plus4u-vault does not contains credentials for user ${options.user}`);
@@ -120,13 +154,13 @@ class OidcTokenProvider {
         console.error("Login successful.");
       }
     }else if (mode === "passwordFile") {
-      const props = propertiesReader(options.passwordFile, "utf-8"); 
+      const props = propertiesReader(options.passwordFile, "utf-8");
       let ac1 = props.get("accessCode1");
       let ac2 = props.get("accessCode2");
       if(!ac1 || !ac2){
         console.error(`Password file does not contain accessCode1 and/or accessCode2.`);
         process.exit(4)
-      }       
+      }
       let login = oidcToken._login(ac1, ac2);
       if (!login) {
         console.error("Login not successful.");
